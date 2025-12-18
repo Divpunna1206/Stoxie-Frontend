@@ -1,115 +1,97 @@
 
-
-
-// // src/api/stocks.ts
-// import apiClient from "./client";
-
-// export type StockQuote = {
-//   symbol: string;
-//   name: string;
-//   sector: string;
-//   price: number;
-//   change: number;
-//   volume: number;
-//   sentiment_score?: number | null;
-//   last_news_headline?: string | null;
-//   last_updated?: string | null;
-// };
-
-// // Keep this if you want, but we'll be defensive below
-// export type DashboardResponse = {
-//   stocks: StockQuote[];
-// };
-
-// export async function fetchDashboardStocks(): Promise<StockQuote[]> {
-//   const res = await apiClient.get("/dashboard/stocks");
-//   const data: any = res.data;
-
-//   // Case 1: backend returns an array directly → [ {symbol, ...}, ... ]
-//   if (Array.isArray(data)) {
-//     return data as StockQuote[];
-//   }
-
-//   // Case 2: backend returns { stocks: [ ... ] }
-//   if (data && Array.isArray(data.stocks)) {
-//     return data.stocks as StockQuote[];
-//   }
-
-//   console.error("Unexpected /dashboard/stocks response shape:", data);
-//   return [];
-// }
-
-// /**
-//  * Helper to get one stock from the dashboard data.
-//  * (Backend doesn't have a per-stock endpoint yet.)
-//  */
-// export async function fetchStockBySymbol(
-//   symbol: string
-// ): Promise<StockQuote | null> {
-//   const stocks = await fetchDashboardStocks();
-//   return (
-//     stocks.find(
-//       (s) => s.symbol?.toUpperCase() === symbol.toUpperCase()
-//     ) ?? null
-//   );
-// }
-
-
 // src/api/stocks.ts
 import apiClient from "./client";
+
+type WatchlistItem = {
+  id: number;
+  symbol: string;
+  name: string;
+  sector: string | null;
+  notify_whatsapp: boolean;
+};
+
+type CompanyCatalogItem = {
+  catalog_id?: number | null;
+  symbol: string; // e.g. "RIL.BSE"
+  companyName: string;
+  sector: string;
+  exchange: string;
+  price?: number | null;
+  currency?: string;
+};
 
 export type StockQuote = {
   symbol: string;
   name: string;
   sector: string;
   price: number;
-  change: number;
+
+  // placeholders until paid APIs
+  change: number; // dashboard renders as "%", so keep 0 for now
   volume: number;
   sentiment_score?: number | null;
   last_news_headline?: string | null;
   last_updated?: string | null;
 };
 
-// Covers all shapes we might get back
-export type DashboardResponse =
-  | StockQuote[]
-  | { items: StockQuote[] }
-  | { stocks: StockQuote[] };
+let catalogMapCache: Map<string, CompanyCatalogItem> | null = null;
 
-export async function fetchDashboardStocks(): Promise<StockQuote[]> {
-  const res = await apiClient.get<DashboardResponse>("/dashboard/stocks");
-  const data: any = res.data;
+async function getCatalogMap(): Promise<Map<string, CompanyCatalogItem>> {
+  if (catalogMapCache) return catalogMapCache;
 
-  // Case 1: backend returns an array directly → [ {symbol, ...}, ... ]
-  if (Array.isArray(data)) {
-    return data as StockQuote[];
+  const res = await apiClient.get<CompanyCatalogItem[]>("/companies", {
+    params: { q: "", limit: 500 },
+  });
+
+  const map = new Map<string, CompanyCatalogItem>();
+  for (const c of res.data || []) {
+    map.set((c.symbol || "").toUpperCase(), c);
   }
 
-  // Case 2: backend returns { items: [ ... ] }  ✅ your current case
-  if (data && Array.isArray(data.items)) {
-    return data.items as StockQuote[];
-  }
-
-  // Case 3: backend returns { stocks: [ ... ] }
-  if (data && Array.isArray(data.stocks)) {
-    return data.stocks as StockQuote[];
-  }
-
-  console.error("Unexpected /dashboard/stocks response shape:", data);
-  return [];
+  catalogMapCache = map;
+  return map;
 }
 
-/**
- * Helper to get one stock from the dashboard data.
- * (Backend doesn't have a per-stock endpoint yet.)
- */
+export async function fetchDashboardStocks(): Promise<StockQuote[]> {
+  // 1) Watchlist = what to show on dashboard
+  const wlRes = await apiClient.get<WatchlistItem[]>("/watchlist");
+  const watchlist = wlRes.data || [];
+
+  if (watchlist.length === 0) return [];
+
+  // 2) Catalog = optional (price/sector help)
+  let catalog: Map<string, CompanyCatalogItem> | null = null;
+  try {
+    catalog = await getCatalogMap();
+  } catch {
+    catalog = null;
+  }
+
+  // 3) Build quotes with safe placeholders
+  const nowIso = new Date().toISOString();
+
+  return watchlist.map((w) => {
+    const symUpper = (w.symbol || "").toUpperCase();
+    const cat = catalog?.get(symUpper);
+
+    return {
+      symbol: w.symbol,
+      name: w.name,
+      sector: (w.sector ?? cat?.sector ?? "Unknown") as string,
+      price: Number(cat?.price ?? 0),
+
+      change: 0,
+      volume: 0,
+      sentiment_score: 5.0,
+      last_news_headline: null,
+      last_updated: nowIso,
+    };
+  });
+}
+
 export async function fetchStockBySymbol(
   symbol: string
 ): Promise<StockQuote | null> {
   const stocks = await fetchDashboardStocks();
-  return (
-    stocks.find(
-      (s) => s.symbol?.toUpperCase() === symbol.toUpperCase()
-    ) ?? null
-  );
+  return stocks.find((s) => s.symbol?.toUpperCase() === symbol.toUpperCase()) ?? null;
 }

@@ -1,26 +1,35 @@
-import { useState } from 'react';
-import { Link } from 'react-router-dom';
-import { motion, AnimatePresence } from 'motion/react';
+
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Link } from "react-router-dom";
+import { motion, AnimatePresence } from "motion/react";
 import {
-  TrendingUp,
   Search,
   Plus,
   Send,
   Star,
   Trash2,
   User,
-  Sparkles,
   X,
   Briefcase,
-} from 'lucide-react';
-import { Button } from './ui/button';
-import { Input } from './ui/input';
-import { Avatar, AvatarFallback } from './ui/avatar';
-import FuturisticBackground from './FuturisticBackground';
+} from "lucide-react";
+import { Button } from "./ui/button";
+import { Input } from "./ui/input";
+import { Avatar, AvatarFallback } from "./ui/avatar";
+import FuturisticBackground from "./FuturisticBackground";
+
+import {
+  addToWatchlist,
+  fetchCompanies,
+  fetchWatchlist,
+  removeFromWatchlist,
+  searchCompanies,
+  toggleWatchlistWhatsapp,
+  type CompanySearchResult,
+} from "../api/watchlist";
 
 interface Company {
-  id: string;
-  ticker: string;
+  id: string; // watchlist item id as string for UI
+  ticker: string; // symbol, e.g. "RIL.BSE"
   name: string;
   price: number;
   change: number;
@@ -28,148 +37,288 @@ interface Company {
   whatsappEnabled: boolean;
   sector: string;
 }
+const FAVORITES_KEY = "stoxie:favorites";
 
-const sectorCompanies = {
-  Banking: [
-    { ticker: 'HDFCBANK', name: 'HDFC Bank Ltd.', sector: 'Banking' },
-    { ticker: 'ICICIBANK', name: 'ICICI Bank Ltd.', sector: 'Banking' },
-    { ticker: 'SBIN', name: 'State Bank of India', sector: 'Banking' },
-    { ticker: 'AXISBANK', name: 'Axis Bank Ltd.', sector: 'Banking' },
-  ],
-  IT: [
-    { ticker: 'INFY', name: 'Infosys Ltd.', sector: 'IT' },
-    { ticker: 'TCS', name: 'Tata Consultancy Services', sector: 'IT' },
-    { ticker: 'WIPRO', name: 'Wipro Ltd.', sector: 'IT' },
-    { ticker: 'HCLTECH', name: 'HCL Technologies', sector: 'IT' },
-  ],
-  Energy: [
-    { ticker: 'RIL', name: 'Reliance Industries Ltd.', sector: 'Energy' },
-    { ticker: 'ONGC', name: 'Oil & Natural Gas Corp', sector: 'Energy' },
-    { ticker: 'IOC', name: 'Indian Oil Corporation', sector: 'Energy' },
-    { ticker: 'BPCL', name: 'Bharat Petroleum Corp', sector: 'Energy' },
-  ],
-  Telecom: [
-    { ticker: 'AIRTEL', name: 'Bharti Airtel Ltd.', sector: 'Telecom' },
-    { ticker: 'RJIO', name: 'Reliance Jio', sector: 'Telecom' },
-    { ticker: 'IDEA', name: 'Vodafone Idea Ltd.', sector: 'Telecom' },
-  ],
-  Automotive: [
-    { ticker: 'TATAMOTORS', name: 'Tata Motors Ltd.', sector: 'Automotive' },
-    { ticker: 'M&M', name: 'Mahindra & Mahindra', sector: 'Automotive' },
-    { ticker: 'MARUTI', name: 'Maruti Suzuki India', sector: 'Automotive' },
-    { ticker: 'HEROMOTOCO', name: 'Hero MotoCorp Ltd.', sector: 'Automotive' },
-  ],
-  'Consumer Goods': [
-    { ticker: 'ASIANPAINT', name: 'Asian Paints Ltd.', sector: 'Consumer Goods' },
-    { ticker: 'HINDUNILVR', name: 'Hindustan Unilever', sector: 'Consumer Goods' },
-    { ticker: 'ITC', name: 'ITC Ltd.', sector: 'Consumer Goods' },
-    { ticker: 'BRITANNIA', name: 'Britannia Industries', sector: 'Consumer Goods' },
-  ],
-};
+function readFavorites(): Set<string> {
+  try {
+    const raw = localStorage.getItem(FAVORITES_KEY);
+    const arr = raw ? (JSON.parse(raw) as string[]) : [];
+    return new Set(arr.map(s => (s || "").toUpperCase()));
+  } catch {
+    return new Set();
+  }
+}
 
-const initialCompanies: Company[] = [
-  {
-    id: '1',
-    ticker: 'RIL',
-    name: 'Reliance Industries Ltd.',
-    price: 2456.75,
-    change: 3.21,
-    changePercent: 2.34,
-    whatsappEnabled: true,
-    sector: 'Energy',
-  },
-  {
-    id: '2',
-    ticker: 'HDFCBANK',
-    name: 'HDFC Bank Ltd.',
-    price: 1678.30,
-    change: 12.45,
-    changePercent: 5.12,
-    whatsappEnabled: true,
-    sector: 'Banking',
-  },
-  {
-    id: '3',
-    ticker: 'INFY',
-    name: 'Infosys Ltd.',
-    price: 1567.80,
-    change: -1.23,
-    changePercent: -1.23,
-    whatsappEnabled: false,
-    sector: 'IT',
-  },
-];
+function writeFavorites(set: Set<string>) {
+  localStorage.setItem(FAVORITES_KEY, JSON.stringify(Array.from(set)));
+  window.dispatchEvent(new Event("stoxie:favorites-updated"));
+}
+
+function safeNumber(v: any, fallback = 0) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function tickerBadge(ticker: string) {
+  // keep your avatar letters clean even with ".BSE"
+  const cleaned = (ticker || "").replace(/[^A-Z0-9]/gi, "").toUpperCase();
+  return cleaned.substring(0, 2) || "ST";
+}
+
+// small concurrency limiter for “Add Sector”
+async function runWithConcurrency<T>(
+  tasks: Array<() => Promise<T>>,
+  concurrency = 5
+): Promise<PromiseSettledResult<T>[]> {
+  const results: PromiseSettledResult<T>[] = [];
+  let idx = 0;
+
+  const workers = new Array(concurrency).fill(0).map(async () => {
+    while (idx < tasks.length) {
+      const current = idx++;
+      try {
+        const value = await tasks[current]();
+        results[current] = { status: "fulfilled", value } as PromiseSettledResult<T>;
+      } catch (reason) {
+        results[current] = { status: "rejected", reason } as PromiseSettledResult<T>;
+      }
+    }
+  });
+
+  await Promise.all(workers);
+  return results;
+}
 
 export default function WatchlistPage() {
-  const [companies, setCompanies] = useState<Company[]>(initialCompanies);
-  const [searchQuery, setSearchQuery] = useState('');
+  const [companies, setCompanies] = useState<Company[]>([]);
+  const [searchQuery, setSearchQuery] = useState("");
   const [isAddingCompany, setIsAddingCompany] = useState(false);
   const [isAddingSector, setIsAddingSector] = useState(false);
-  const [newTicker, setNewTicker] = useState('');
+  const [newTicker, setNewTicker] = useState("");
 
-  const toggleWhatsApp = (id: string) => {
-    setCompanies(companies.map(c => 
-      c.id === id ? { ...c, whatsappEnabled: !c.whatsappEnabled } : c
-    ));
-  };
+  // catalog cache (for price/sector + Add Sector modal)
+  const [catalog, setCatalog] = useState<CompanySearchResult[]>([]);
+  const [catalogLoaded, setCatalogLoaded] = useState(false);
 
-  const handleRemoveCompany = (id: string) => {
-    setCompanies(companies.filter(c => c.id !== id));
-  };
+  // Add Company suggestions
+  const [suggestions, setSuggestions] = useState<CompanySearchResult[]>([]);
+  const [selectedSuggestion, setSelectedSuggestion] =
+    useState<CompanySearchResult | null>(null);
 
-  const handleAddCompany = () => {
-    if (newTicker.trim()) {
-      const newCompany: Company = {
-        id: Date.now().toString(),
-        ticker: newTicker.toUpperCase(),
-        name: `${newTicker.toUpperCase()} Company`,
-        price: Math.random() * 500 + 50,
-        change: Math.random() * 20 - 10,
-        changePercent: Math.random() * 5 - 2.5,
-        whatsappEnabled: false,
-        sector: 'Other',
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const catalogBySymbol = useMemo(() => {
+    const map = new Map<string, CompanySearchResult>();
+    for (const c of catalog) map.set(c.symbol.toUpperCase(), c);
+    return map;
+  }, [catalog]);
+
+  async function ensureCatalog(limit = 500) {
+    if (catalogLoaded) return;
+    const list = await fetchCompanies({ limit });
+    setCatalog(list);
+    setCatalogLoaded(true);
+  }
+
+  async function loadWatchlist() {
+    const wl = await fetchWatchlist();
+    window.dispatchEvent(new Event("stoxie:watchlist-updated"));
+
+    // catalog is optional (used only to fill price from JSON catalog if present)
+    // We try to load it once, but even if it fails watchlist still works.
+    try {
+      await ensureCatalog(500);
+    } catch {
+      // ignore
+    }
+
+    const ui: Company[] = wl.map((item) => {
+      const symbolUpper = item.symbol.toUpperCase();
+      const cat = catalogBySymbol.get(symbolUpper);
+
+      // price comes from your JSON catalog (/companies response has price)
+      // change/volume/news/sentiment are not available yet -> keep placeholders
+      const price = safeNumber(cat?.price, 0);
+      const change = 0;
+      const changePercent = 0;
+
+      return {
+        id: String(item.id),
+        ticker: item.symbol,
+        name: item.name,
+        price,
+        change,
+        changePercent,
+        whatsappEnabled: !!item.notify_whatsapp,
+        sector: item.sector ?? cat?.sector ?? "Unknown",
       };
-      setCompanies([...companies, newCompany]);
-      setNewTicker('');
-      setIsAddingCompany(false);
+    });
+
+    setCompanies(ui);
+  }
+
+  useEffect(() => {
+    loadWatchlist().catch((e) => {
+      console.error("Failed to load watchlist:", e);
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // when Add Sector opens, load catalog (top 500)
+  useEffect(() => {
+    if (isAddingSector) {
+      ensureCatalog(500).catch((e) => console.error("Catalog load failed:", e));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAddingSector]);
+
+  // suggestions for Add Company modal
+  useEffect(() => {
+    if (!isAddingCompany) return;
+
+    const q = newTicker.trim();
+    setSelectedSuggestion(null);
+
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+
+    if (q.length < 1) {
+      setSuggestions([]);
+      return;
+    }
+
+    debounceRef.current = setTimeout(() => {
+      searchCompanies({ q, limit: 20 })
+        .then(setSuggestions)
+        .catch((e) => {
+          console.error("Company search failed:", e);
+          setSuggestions([]);
+        });
+    }, 250);
+
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+    };
+  }, [newTicker, isAddingCompany]);
+
+  const toggleWhatsApp = async (id: string) => {
+    const current = companies.find((c) => c.id === id);
+    if (!current) return;
+
+    // optimistic UI
+    setCompanies((prev) =>
+      prev.map((c) => (c.id === id ? { ...c, whatsappEnabled: !c.whatsappEnabled } : c))
+    );
+
+    try {
+      await toggleWatchlistWhatsapp(Number(id), !current.whatsappEnabled);
+    } catch (e) {
+      console.error("toggle whatsapp failed:", e);
+      // revert + reload from server
+      await loadWatchlist();
     }
   };
 
-  const handleAddSector = (sectorName: string) => {
-    const sectorComps = sectorCompanies[sectorName as keyof typeof sectorCompanies];
-    const newCompanies = sectorComps.map((comp) => ({
-      id: Date.now().toString() + Math.random(),
-      ticker: comp.ticker,
-      name: comp.name,
-      price: Math.random() * 3000 + 500,
-      change: Math.random() * 20 - 10,
-      changePercent: Math.random() * 5 - 2.5,
-      whatsappEnabled: false,
-      sector: comp.sector,
-    }));
-    
-    // Filter out companies that already exist
-    const existingTickers = companies.map(c => c.ticker);
-    const filteredNewCompanies = newCompanies.filter(c => !existingTickers.includes(c.ticker));
-    
-    setCompanies([...companies, ...filteredNewCompanies]);
-    setIsAddingSector(false);
+  const handleRemoveCompany = async (id: string) => {
+    // optimistic remove
+    const prev = companies;
+    setCompanies((c) => c.filter((x) => x.id !== id));
+    try {
+      await removeFromWatchlist(Number(id));
+    } catch (e) {
+      console.error("remove failed:", e);
+      setCompanies(prev);
+    }
   };
 
-  const whatsappEnabledCount = companies.filter(c => c.whatsappEnabled).length;
+  const handleAddCompany = async () => {
+    const typed = newTicker.trim();
+    const sym = selectedSuggestion?.symbol ?? typed.toUpperCase();
+    if (!sym) return;
+
+    try {
+      await addToWatchlist({
+        symbol: sym,
+        exchange: selectedSuggestion?.exchange ?? null,
+      });
+
+      setNewTicker("");
+      setSelectedSuggestion(null);
+      setSuggestions([]);
+      setIsAddingCompany(false);
+
+      await loadWatchlist();
+    } catch (e: any) {
+      // 409 = Already in watchlist
+      const status = e?.response?.status;
+      if (status === 409) {
+        alert("Already in watchlist");
+        setIsAddingCompany(false);
+        await loadWatchlist();
+        return;
+      }
+      console.error("add failed:", e);
+      alert("Failed to add company");
+    }
+  };
+
+  const sectors = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const c of catalog) {
+      const s = (c.sector || "Unknown").trim() || "Unknown";
+      map.set(s, (map.get(s) ?? 0) + 1);
+    }
+    // keep deterministic order
+    return Array.from(map.entries())
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([sector, count]) => ({ sector, count }));
+  }, [catalog]);
+
+  const handleAddSector = async (sectorName: string) => {
+    const sectorCompanies = catalog.filter(
+      (c) => (c.sector || "Unknown") === sectorName
+    );
+
+    if (sectorCompanies.length === 0) {
+      setIsAddingSector(false);
+      return;
+    }
+
+    // create tasks for adding all symbols of that sector
+    const tasks = sectorCompanies.map((c) => async () => {
+      // ignore duplicates (backend returns 409)
+      try {
+        return await addToWatchlist({ symbol: c.symbol, exchange: c.exchange });
+      } catch (e: any) {
+        if (e?.response?.status === 409) return null as any;
+        throw e;
+      }
+    });
+
+    try {
+      await runWithConcurrency(tasks, 5);
+      setIsAddingSector(false);
+      await loadWatchlist();
+    } catch (e) {
+      console.error("Add sector failed:", e);
+      alert("Failed to add sector companies");
+    }
+  };
+
+  const whatsappEnabledCount = companies.filter((c) => c.whatsappEnabled).length;
 
   const handleSendToWhatsApp = () => {
-    const enabledCompanies = companies.filter(c => c.whatsappEnabled);
+    const enabledCompanies = companies.filter((c) => c.whatsappEnabled);
     if (enabledCompanies.length === 0) {
-      alert('Please enable WhatsApp for at least one company');
+      alert("Please enable WhatsApp for at least one company");
       return;
     }
     alert(`Sending summaries for ${enabledCompanies.length} companies to WhatsApp`);
   };
 
-  const filteredCompanies = companies.filter(c =>
-    c.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    c.ticker.toLowerCase().includes(searchQuery.toLowerCase())
+  const filteredCompanies = companies.filter(
+    (c) =>
+      c.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      c.ticker.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
   return (
@@ -182,7 +331,7 @@ export default function WatchlistPage() {
           <div className="flex items-center gap-12">
             <Link to="/" className="flex items-center gap-3">
               <div className="size-8 rounded-lg flex items-center justify-center">
-                 <img
+                <img
                   src="/stoxie-logo.png"
                   alt="Stoxie Logo"
                   className="relative size-6 drop-shadow-[0_0_10px_rgba(34,211,238,0.9)]"
@@ -282,7 +431,7 @@ export default function WatchlistPage() {
                   <div className="flex items-center gap-4 flex-1">
                     <Avatar className="size-14">
                       <AvatarFallback className="bg-gradient-to-br from-[#1E40AF] to-[#3B82F6] text-lg">
-                        {company.ticker.substring(0, 2)}
+                        {tickerBadge(company.ticker)}
                       </AvatarFallback>
                     </Avatar>
                     <div>
@@ -292,10 +441,15 @@ export default function WatchlistPage() {
                         <span className="px-2 py-0.5 rounded bg-white/5">{company.sector}</span>
                       </div>
                     </div>
-                    <div className={`ml-4 px-3 py-1 rounded-lg text-sm ${
-                      company.change >= 0 ? 'text-[#00FF88] bg-[#00FF88]/10' : 'text-red-400 bg-red-400/10'
-                    }`}>
-                      {company.change >= 0 ? '+' : ''}{company.changePercent.toFixed(2)}%
+                    <div
+                      className={`ml-4 px-3 py-1 rounded-lg text-sm ${
+                        company.change >= 0
+                          ? "text-[#00FF88] bg-[#00FF88]/10"
+                          : "text-red-400 bg-red-400/10"
+                      }`}
+                    >
+                      {company.change >= 0 ? "+" : ""}
+                      {company.changePercent.toFixed(2)}%
                     </div>
                   </div>
 
@@ -308,18 +462,25 @@ export default function WatchlistPage() {
                       onClick={() => toggleWhatsApp(company.id)}
                       className={`rounded-xl px-4 h-10 ${
                         company.whatsappEnabled
-                          ? 'bg-[#25D366] hover:bg-[#25D366]/90 text-white'
-                          : 'bg-white/5 hover:bg-white/10 text-[#B3B3B3]'
+                          ? "bg-[#25D366] hover:bg-[#25D366]/90 text-white"
+                          : "bg-white/5 hover:bg-white/10 text-[#B3B3B3]"
                       }`}
                     >
-                      WhatsApp {company.whatsappEnabled ? 'On' : 'Off'}
+                      WhatsApp {company.whatsappEnabled ? "On" : "Off"}
                     </Button>
                     <Button
-                      variant="ghost"
-                      size="icon"
-                      className="rounded-xl text-[#FFD700] hover:bg-[#FFD700]/10"
-                    >
-                      <Star className="size-5" />
+                      onClick={() => {
+                        const sym = (company.ticker || "").toUpperCase();
+                        const fav = readFavorites();
+                        if (fav.has(sym)) fav.delete(sym);
+                        else fav.add(sym);
+                        writeFavorites(fav);
+                          }}
+                          variant="ghost"
+                          size="icon"
+                          className="rounded-xl text-[#FFD700] hover:bg-[#FFD700]/10"
+                        >
+                          <Star className="size-5" />
                     </Button>
                     <Button
                       onClick={() => handleRemoveCompany(company.id)}
@@ -348,7 +509,9 @@ export default function WatchlistPage() {
           </div>
           <div className="bg-gradient-to-br from-[#111111] to-[#0D0D0D] rounded-2xl border border-white/5 p-6">
             <div className="text-[#B3B3B3] text-sm mb-2">Total Sectors</div>
-            <div className="text-3xl text-[#FF00FF]">{new Set(companies.map(c => c.sector)).size}</div>
+            <div className="text-3xl text-[#FF00FF]">
+              {new Set(companies.map((c) => c.sector)).size}
+            </div>
           </div>
         </div>
       </main>
@@ -372,13 +535,37 @@ export default function WatchlistPage() {
                 <X className="size-5" />
               </Button>
             </div>
+
             <Input
               value={newTicker}
               onChange={(e) => setNewTicker(e.target.value)}
-              placeholder="Enter ticker symbol (e.g., AAPL)"
-              className="mb-6 bg-[#1A1A1A] border-white/5 rounded-2xl h-12"
-              onKeyPress={(e) => e.key === 'Enter' && handleAddCompany()}
+              placeholder="Search by name or symbol (e.g., RIL)"
+              className="mb-3 bg-[#1A1A1A] border-white/5 rounded-2xl h-12"
+              onKeyPress={(e) => e.key === "Enter" && handleAddCompany()}
             />
+
+            {/* Suggestions (minimal UI change, same modal styling) */}
+            {suggestions.length > 0 && (
+              <div className="mb-6 max-h-52 overflow-auto rounded-2xl border border-white/5 bg-[#111111]">
+                {suggestions.map((s) => (
+                  <button
+                    key={s.symbol}
+                    onClick={() => {
+                      setSelectedSuggestion(s);
+                      setNewTicker(s.symbol); // keep user aware what will be added
+                      setSuggestions([]);
+                    }}
+                    className="w-full text-left px-4 py-3 hover:bg-white/5 transition-colors"
+                  >
+                    <div className="text-sm">{s.companyName}</div>
+                    <div className="text-xs text-[#B3B3B3]">
+                      {s.symbol} • {s.exchange} • {s.sector}
+                    </div>
+                  </button>
+                ))}
+              </div>
+            )}
+
             <div className="flex gap-3">
               <Button
                 onClick={() => setIsAddingCompany(false)}
@@ -409,7 +596,9 @@ export default function WatchlistPage() {
             <div className="flex items-center justify-between mb-6">
               <div>
                 <h2 className="text-2xl">Add Sector</h2>
-                <p className="text-sm text-[#B3B3B3] mt-1">Select a sector to add all companies from that sector</p>
+                <p className="text-sm text-[#B3B3B3] mt-1">
+                  Select a sector to add all companies from that sector
+                </p>
               </div>
               <Button
                 onClick={() => setIsAddingSector(false)}
@@ -420,8 +609,9 @@ export default function WatchlistPage() {
                 <X className="size-5" />
               </Button>
             </div>
+
             <div className="grid grid-cols-2 gap-4">
-              {Object.keys(sectorCompanies).map((sector) => (
+              {sectors.map(({ sector, count }) => (
                 <button
                   key={sector}
                   onClick={() => handleAddSector(sector)}
@@ -431,11 +621,11 @@ export default function WatchlistPage() {
                     <div className="size-10 rounded-xl bg-gradient-to-br from-[#00FFFF]/20 to-[#00D4FF]/20 flex items-center justify-center">
                       <Briefcase className="size-5 text-[#00FFFF]" />
                     </div>
-                    <div className="text-lg group-hover:text-[#00FFFF] transition-colors">{sector}</div>
+                    <div className="text-lg group-hover:text-[#00FFFF] transition-colors">
+                      {sector}
+                    </div>
                   </div>
-                  <div className="text-xs text-[#B3B3B3]">
-                    {sectorCompanies[sector as keyof typeof sectorCompanies].length} companies
-                  </div>
+                  <div className="text-xs text-[#B3B3B3]">{count} companies</div>
                 </button>
               ))}
             </div>

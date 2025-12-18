@@ -187,13 +187,12 @@ export default function LoginSignup() {
       // token already stored in loginWithPhoneOtp
       navigate("/dashboard");
     } catch (err: any) {
-      console.error("[LOGIN] /login error:", err);
-      const detail =
-        err?.response?.data?.detail ||
-        err?.message ||
-        "Login failed. Please try again.";
-      setError(detail);
-    } finally {
+    const detail =
+      err?.response?.data?.detail ||
+      "Login failed. Please sign up first.";
+    setError(detail);
+  }
+ finally {
       setLoadingLogin(false);
     }
   };
