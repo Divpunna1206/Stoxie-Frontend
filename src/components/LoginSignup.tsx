@@ -185,7 +185,7 @@ export default function LoginSignup() {
 
       console.log("[LOGIN] Backend login success:", res);
       // token already stored in loginWithPhoneOtp
-      navigate("/dashboard");
+      navigate("/watchlist");
     } catch (err: any) {
     const detail =
       err?.response?.data?.detail ||
@@ -266,7 +266,7 @@ export default function LoginSignup() {
       // Send token to backend /verify-token (not /login)
       await loginWithGoogleIdToken(idToken);
 
-      navigate("/dashboard");
+      navigate("/watchlist");
     } catch (err: any) {
       console.error("[GOOGLE LOGIN] Error:", err);
       const msg =

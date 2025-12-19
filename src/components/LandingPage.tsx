@@ -402,7 +402,7 @@ export default function LandingPage() {
                 </div>
                  
                 <div className="text-center flex justify-center">
-                <Link to="/dashboard">
+                <Link to="/login">
                   <Button className="w-40  bg-gradient-to-r from-[#00FFFF] to-[#00D4FF] hover:from-[#00D4FF] hover:to-[#00FFFF] text-black rounded-2xl h-14 text-base">
                     Claim Your Free Spot Now ({7000} Remaining)
                     <ArrowRight className="ml-2 size-5" />
