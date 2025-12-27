@@ -21,6 +21,7 @@ import {
   signupUser,
   loginWithPhoneOtp,
   loginWithGoogleIdToken,
+  requestPhoneOtp, // ✅ add
 } from "../api/auth";
 
 import { signInWithPopup } from "firebase/auth";
@@ -104,29 +105,68 @@ export default function LoginSignup() {
     }, 1000);
   };
 
-  const handleSendOTP = (e: React.FormEvent) => {
-    e.preventDefault();
-    setError(null);
+  // const handleSendOTP = (e: React.FormEvent) => {
+  //   e.preventDefault();
+  //   setError(null);
 
-    if (!phoneNumber) {
-      setError("Please enter your phone number.");
-      return;
-    }
+  //   if (!phoneNumber) {
+  //     setError("Please enter your phone number.");
+  //     return;
+  //   }
 
-    if (!agreedToTerms) {
-      setError("Please agree to the Terms of Service and Privacy Policy.");
-      return;
-    }
+  //   if (!agreedToTerms) {
+  //     setError("Please agree to the Terms of Service and Privacy Policy.");
+  //     return;
+  //   }
 
-    const normalizedPhone = normalizePhoneToE164(phoneNumber);
-    setPhoneNumber(normalizedPhone); // show +91... in UI
+  //   const normalizedPhone = normalizePhoneToE164(phoneNumber);
+  //   setPhoneNumber(normalizedPhone); // show +91... in UI
 
-    // DEV ONLY: no Firebase SMS, just simulate OTP send
+  //   // DEV ONLY: no Firebase SMS, just simulate OTP send
+  //   console.log("[LOGIN] DEV MODE - Sending OTP to:", normalizedPhone);
+  //   console.log("[LOGIN] Use OTP 123456 for testing.");
+
+  //   startOtpStep();
+  // };
+   const handleSendOTP = async (e: React.FormEvent) => {
+  e.preventDefault();
+  setError(null);
+  setSuccess(null);
+
+  if (!phoneNumber) {
+    setError("Please enter your phone number.");
+    return;
+  }
+
+  if (!agreedToTerms) {
+    setError("Please agree to the Terms of Service and Privacy Policy.");
+    return;
+  }
+
+  const normalizedPhone = normalizePhoneToE164(phoneNumber);
+  setPhoneNumber(normalizedPhone);
+
+  setLoadingLogin(true);
+
+  try {
+    // ✅ REAL check happens here
+    await requestPhoneOtp(normalizedPhone);
+
+    // DEV ONLY: still show your console logs
     console.log("[LOGIN] DEV MODE - Sending OTP to:", normalizedPhone);
     console.log("[LOGIN] Use OTP 123456 for testing.");
 
     startOtpStep();
-  };
+  } catch (err: any) {
+    const detail =
+      err?.response?.data?.detail ||
+      "Mobile number not registered. Please sign up first.";
+    setError(detail);
+  } finally {
+    setLoadingLogin(false);
+  }
+};
+
 
   const handleOtpChange = (index: number, value: string) => {
     if (value.length > 1) return;
@@ -149,20 +189,49 @@ export default function LoginSignup() {
     }
   };
 
-  const handleResendOTP = () => {
-    setError(null);
+  // const handleResendOTP = () => {
+  //   setError(null);
 
-    if (!phoneNumber) {
-      setError("Please enter your phone number again.");
-      setStep("phone");
-      return;
-    }
+  //   if (!phoneNumber) {
+  //     setError("Please enter your phone number again.");
+  //     setStep("phone");
+  //     return;
+  //   }
+
+  //   console.log("[LOGIN] DEV MODE - Resending OTP to:", phoneNumber);
+  //   console.log("[LOGIN] Use OTP 123456 for testing.");
+
+  //   startOtpStep();
+  // };
+  const handleResendOTP = async () => {
+  setError(null);
+  setSuccess(null);
+
+  if (!phoneNumber) {
+    setError("Please enter your phone number again.");
+    setStep("phone");
+    return;
+  }
+
+  setLoadingLogin(true);
+  try {
+    await requestPhoneOtp(phoneNumber);
 
     console.log("[LOGIN] DEV MODE - Resending OTP to:", phoneNumber);
     console.log("[LOGIN] Use OTP 123456 for testing.");
 
     startOtpStep();
-  };
+  } catch (err: any) {
+    const detail =
+      err?.response?.data?.detail ||
+      "Mobile number not registered. Please sign up first.";
+    setError(detail);
+    setStep("phone"); // optional: go back to phone step
+  } finally {
+    setLoadingLogin(false);
+  }
+};
+
 
   const handleVerifyOTP = async (e: React.FormEvent) => {
     e.preventDefault();

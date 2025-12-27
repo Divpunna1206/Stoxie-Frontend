@@ -43,6 +43,9 @@ export interface PhoneOtpLoginPayload {
   phoneNumber: string;
   otp: string;
 }
+export interface OtpRequestResponse {
+  msg: string;
+}
 
 export function getAuthToken(): string | null {
   return localStorage.getItem(AUTH_TOKEN_KEY);
@@ -56,6 +59,14 @@ export function clearAuthToken(): void {
  * SIGNUP: calls POST /auth/signup
  * Backend expects: { phone_number, display_name, email }
  */
+
+export async function requestPhoneOtp(phoneNumber: string): Promise<OtpRequestResponse> {
+  const res = await apiClient.post<OtpRequestResponse>("/request-otp", {
+    phone_number: phoneNumber,
+  });
+  return res.data;
+}
+
 export async function signupUser(
   payload: SignupPayload
 ): Promise<SignupResponse> {
